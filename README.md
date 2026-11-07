@@ -24,7 +24,7 @@ included here and can be obtained from JEDEC.
 | Wire diameter | Default 0.025 mm |
 | Loop height (h1) | Height of the loop top above the **first pick** (the bond pad), as in JESD59. Must be above both points. Default 0.2 mm |
 | Profile | *Smooth curve* (default), *JEDEC 4-point* or *JEDEC 5-point*, see below |
-| Pad angle (alpha), Lead angle (beta) | Smooth curve and JEDEC 5-point. Angle of the wire at the bond pad and at the lead. Defaults 90° and 15° |
+| Pad angle (alpha), Lead angle (beta) | Smooth curve and JEDEC 5-point. Angle of the wire at the bond pad and at the lead. Defaults 90° and 30° |
 | Material | Gold, Copper, Aluminum, Silver (Polished appearance, Satin if unavailable) |
 | Join wire to | None, Face 1 body, Face 2 body, or Both (this fuses the two bodies into one) |
 | Live preview | Builds the wire as you change inputs. Turn off for heavy designs |

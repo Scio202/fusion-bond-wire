@@ -319,7 +319,7 @@ class Created(adsk.core.CommandCreatedEventHandler):
         for k in PROFILES:
             pr.listItems.add(k, k == PROFILES[0])
         i.addAngleValueCommandInput('alpha', 'Pad angle (alpha)', V('90 deg'))
-        i.addAngleValueCommandInput('beta', 'Lead angle (beta)', V('15 deg'))
+        i.addAngleValueCommandInput('beta', 'Lead angle (beta)', V('30 deg'))
         m = i.addDropDownCommandInput('mat', 'Material', adsk.core.DropDownStyles.TextListDropDownStyle)
         for k in MATS:
             m.listItems.add(k, k == 'Gold')
