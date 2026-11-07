@@ -1,7 +1,9 @@
 # Bond Wire for Fusion
 
-Creates a realistic wire-bond loop between two points or faces. Pick the die pad, pick the landing
-pad, set the wire diameter and loop height, and the add-in builds the wire as a solid body.
+Creates a wire-bond loop between two points or faces. Pick the die pad, pick the landing pad, set the
+wire diameter and loop height, and the add-in builds the wire as a solid body. The shapes follow
+EIA/JEDEC Standard No. 59 (JESD59, *Bond Wire Modeling Standard*, 1997); the standard itself is not
+included here and can be obtained from JEDEC.
 
 ## Install
 
@@ -20,7 +22,9 @@ pad, set the wire diameter and loop height, and the add-in builds the wire as a 
 | Option | Meaning |
 |---|---|
 | Wire diameter | Default 0.025 mm |
-| Loop height (h1) | Apex height above the *higher* of the two points. Default 0.2 mm |
+| Loop height (h1) | Height of the loop top above the **first pick** (the bond pad), as in JESD59. Must be above both points. Default 0.2 mm |
+| Profile | *Smooth curve* (default), *JEDEC 4-point* or *JEDEC 5-point*, see below |
+| Pad angle (alpha), Lead angle (beta) | JEDEC 5-point only. Defaults 90° and 15° |
 | Material | Gold, Copper, Aluminum, Silver (Polished appearance, Satin if unavailable) |
 | Join wire to | None, Face 1 body, Face 2 body, or Both (this fuses the two bodies into one) |
 | Live preview | Builds the wire as you change inputs. Turn off for heavy designs |
@@ -31,19 +35,30 @@ their **center** (centroid).
 
 **For reverse bonding** (ball on the substrate, stitch on the die), pick the substrate first.
 
-## How the shape is built
+## Profiles
 
-A cubic Bezier in the vertical plane through the two points, modelled on the JEDEC 4-point wire:
-vertical rise, short crest (D/8), then a straight descent onto the stitch. The apex is solved so it sits
-exactly at *h1*. The curve is sampled into an 11-point fitted spline and swept with a pipe.
+All profiles lie in the vertical plane through the two points. In JESD59 terms, *d* is the horizontal
+distance between them, *h1* is the loop height above the bond pad and *h2* is the height difference to
+the lead (the picture in the dialog calls it *dz*).
+
+| Profile | Geometry |
+|---|---|
+| **Smooth curve** | A cubic Bezier shaped like the 4-point wire (vertical rise, short flat crest, straight descent), with the apex solved to sit exactly at *h1*. Corners are rounded, so it deviates from the standard's polyline by up to about 0.05 mm (roughly two wire diameters) for a 0.2 mm loop. |
+| **JEDEC 4-point** | The standard's simplified polyline: vertical rise to *h1*, a flat top of *d*/8, then one straight run to the lead. Sharp corners, exact lengths. |
+| **JEDEC 5-point** | The standard's preferred polyline with the pad angle *alpha* and lead angle *beta*; the fourth point sits at *d*/2. Invalid angle combinations are rejected with a message. |
+
+The status line shows the path length; for the JEDEC profiles it equals the standard's length sum.
+The curve for *Smooth* is sampled into an 11-point fitted spline and swept with a pipe.
 
 When the **second pick is a planar face**, the wire is extended straight into the pad and split at the
-face's plane, so it ends flat and flush on the face instead of touching at one point.
+face, so it ends flat and flush on the face instead of touching at one point.
 
 ## Requirements and limits
 
 - **Parametric designs only** (Capture Design History on). Direct-modeling designs are not supported.
 - The flush landing needs the second pick to be a **planar face**. Other picks end exactly at the point.
+- The JEDEC profiles have sharp corners, so they look blockier than a real wire. Use *Smooth curve*
+  when appearance matters more than matching the standard's path exactly.
 - The add-in temporarily turns on Fusion's *Allow 3D sketching* preference to draw the 3D spline and
   restores your setting afterwards.
 - Each wire adds a sketch, a pipe feature, and (when landing on a face) split / remove / delete-face

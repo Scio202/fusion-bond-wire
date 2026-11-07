@@ -3,6 +3,7 @@ import adsk.core, adsk.fusion, traceback, math, os, time
 CMD_ID = 'bondWireCmd'
 _busy = False
 _skip_until = 0  # ignore preview events caused by our own selection restore
+PROFILES = ('Smooth curve', 'JEDEC 4-point (JESD59 simplified)', 'JEDEC 5-point (JESD59 preferred)')
 JOINS = ('None', 'Face 1 body', 'Face 2 body', 'Both (merges the two bodies)')
 app = adsk.core.Application.get()
 ui = app.userInterface
@@ -14,8 +15,8 @@ N = 10  # fit points sampled along the Bezier (11 points)
 
 def _controls(dx, dz, h1):
     """Cubic Bezier shaped like a JEDEC 4-point wire: vertical rise, short crest, straight descent
-    onto the stitch. Apex is solved to sit exactly h1 above the higher endpoint."""
-    A = max(0, dz) + h1
+    onto the stitch. Apex is solved to sit exactly h1 above the start point (the bond pad, as in JESD59)."""
+    A = h1
 
     def ctrl(Hc):
         return [(0, 0), (0, Hc), (dx*(DK + T*(1 - DK)), Hc + T*(dz - Hc)), (dx, dz)]
@@ -28,6 +29,25 @@ def _controls(dx, dz, h1):
         mid = (lo + hi)/2
         lo, hi = (mid, hi) if apex(mid) < A else (lo, mid)
     return ctrl(hi)
+
+
+def _polyline(dx, dz, h1, five, alpha, beta):
+    """EIA/JEDEC 59 wire path, origin at the bond pad. Simplified model: alpha = 90 deg, no 4th point."""
+    x2 = h1 / math.tan(alpha) if five else 0
+    pts = [(0, 0), (x2, h1), (x2 + dx / 8, h1)]
+    if five:
+        pts.append((dx / 2, dz + dx / 2 * math.tan(beta)))
+    pts.append((dx, dz))
+    return pts
+
+
+def _check(pts, dx, dz, h1, five):
+    if five and not (pts[2][0] < pts[3][0] < dx and pts[3][1] < h1):
+        raise ValueError('Angles give an invalid loop: lower alpha or beta')
+
+
+def _polylen(pts):
+    return sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
 
 
 def _mid(curve):
@@ -116,6 +136,11 @@ def build(inputs, e0, e1):
     a, b = _point(e0), _point(e1)
     dia = inputs.itemById('dia').value   # cm (Fusion internal units)
     h = inputs.itemById('h').value
+    profile = inputs.itemById('profile').selectedItem.name
+    smooth = profile.startswith('Smooth')
+    five = profile.startswith('JEDEC 5')
+    alpha = inputs.itemById('alpha').value    # radians
+    beta = inputs.itemById('beta').value
 
     # vertical plane through both points: u = horizontal dir toward b, v = world Z
     dx = math.hypot(b.x - a.x, b.y - a.y)
@@ -124,6 +149,12 @@ def build(inputs, e0, e1):
     if dx < 1e-9:
         u = adsk.core.Vector3D.create(1, 0, 0)
     u.normalize()
+    # validate before touching the design so a bad input leaves nothing behind
+    pl = None if smooth else _polyline(dx, dz, h, five, alpha, beta)
+    if h <= max(0, dz):
+        raise ValueError('Loop height h1 must be above both points (h1 > dz)')
+    if pl:
+        _check(pl, dx, dz, h, five)
 
     root = app.activeProduct.rootComponent
     # 3D splines on a plain XY sketch (needs "Allow 3D sketching" pref; points are world coords)
@@ -135,30 +166,43 @@ def build(inputs, e0, e1):
         sk.name = 'BondWire'
 
         b0, b1 = _body(e0), _body(e1)
-
-        P = _controls(dx, dz, h)
-        metal = inputs.itemById('mat').selectedItem.name
-        length = _length(P)
-        W = lambda p: adsk.core.Point3D.create(a.x + u.x*p[0], a.y + u.y*p[0], a.z + p[1])
-        pts = adsk.core.ObjectCollection.create()
-        for i in range(N + 1):
-            pts.add(W(_bezier(*P, i / N)))
-        curve = sk.sketchCurves.sketchFittedSplines.add(pts)
-        # landing on a planar face: continue straight along the spline's end tangent into the pad, then split at its plane
-        # (Fusion can't sweep a pipe along a control-point spline, so this is a fitted one)
         land = e1 if isinstance(e1, adsk.fusion.BRepFace) and e1.geometry.objectType == adsk.core.Plane.classType() else None
-        if land:
-            ev = curve.geometry.evaluator
-            t = ev.getTangent(ev.getParameterExtents()[2])[1]
-            t.normalize()
-            L1 = _extend(math.hypot(t.x, t.y), t.z, dia / 2, dia)
-            e = curve.endSketchPoint.geometry
-            sk.sketchCurves.sketchLines.addByTwoPoints(
-                curve.endSketchPoint, adsk.core.Point3D.create(e.x + t.x*L1, e.y + t.y*L1, e.z + t.z*L1))
+        metal = inputs.itemById('mat').selectedItem.name
+        W = lambda p: adsk.core.Point3D.create(a.x + u.x*p[0], a.y + u.y*p[0], a.z + p[1])
+        if smooth:
+            P = _controls(dx, dz, h)
+            length = _length(P)
+            pts = adsk.core.ObjectCollection.create()
+            for i in range(N + 1):
+                pts.add(W(_bezier(*P, i / N)))
+            first = sk.sketchCurves.sketchFittedSplines.add(pts)
+            # landing on a planar face: continue straight along the spline's end tangent into the pad, then split at its plane
+            # (Fusion can't sweep a pipe along a control-point spline, so this is a fitted one)
+            if land:
+                ev = first.geometry.evaluator
+                t = ev.getTangent(ev.getParameterExtents()[2])[1]
+                t.normalize()
+                L1 = _extend(math.hypot(t.x, t.y), t.z, dia / 2, dia)
+                e = first.endSketchPoint.geometry
+                sk.sketchCurves.sketchLines.addByTwoPoints(
+                    first.endSketchPoint, adsk.core.Point3D.create(e.x + t.x*L1, e.y + t.y*L1, e.z + t.z*L1))
+        else:
+            length = _polylen(pl)
+            run_pts = list(pl)
+            if land:   # extend the last (straight) segment into the pad; the plane split then cuts it flush
+                tx, tz = pl[-1][0] - pl[-2][0], pl[-1][1] - pl[-2][1]
+                n = math.hypot(tx, tz)
+                L1 = _extend(tx, tz, dia / 2, dia)
+                run_pts[-1] = (pl[-1][0] + tx / n * L1, pl[-1][1] + tz / n * L1)
+            lines = []
+            for i in range(len(run_pts) - 1):
+                start = lines[-1].endSketchPoint if lines else W(run_pts[0])
+                lines.append(sk.sketchCurves.sketchLines.addByTwoPoints(start, W(run_pts[i + 1])))
+            first = lines[0]
     finally:
         fp.is3DSketchingAllowed = was
 
-    path = root.features.createPath(curve, True)
+    path = root.features.createPath(first, True)
     pi = root.features.pipeFeatures.createInput(path, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
     pi.sectionSize = adsk.core.ValueInput.createByReal(dia)
     wire = root.features.pipeFeatures.add(pi).bodies.item(0)
@@ -170,12 +214,12 @@ def build(inputs, e0, e1):
 
     if land:  # split at the pad's plane; the smaller piece is the overshoot stub
         sf = root.features.splitBodyFeatures.add(
-            root.features.splitBodyFeatures.createInput(wire, land, True))
+            root.features.splitBodyFeatures.createInput(wire, land, False))   # the face itself, not its infinite plane: a higher pad would also cut the neck
         pieces = sorted(sf.bodies, key=lambda b: b.volume)
         root.features.removeFeatures.add(pieces[0])
         wire = pieces[-1]
         # the straight overshoot leaves a separate cylinder face; delete it so the neighbours heal into one face
-        for f in wire.faces:
+        for f in (wire.faces if smooth else []):
             if f.geometry.objectType == adsk.core.Cylinder.classType():
                 root.features.deleteFaceFeatures.add(f)
                 break
@@ -245,11 +289,19 @@ class Preview(adsk.core.CommandEventHandler):
         _run(args, True)
 
 
+class Changed(adsk.core.InputChangedEventHandler):
+    def notify(self, args):
+        if args.input.id == 'profile':      # alpha / beta only exist in the 5-point model
+            five = args.input.selectedItem.name.startswith('JEDEC 5')
+            for k in ('alpha', 'beta'):
+                args.inputs.itemById(k).isVisible = five
+
+
 class Created(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
         cmd = args.command
         i = cmd.commandInputs
-        cmd.setDialogInitialSize(340, 515)   # default opens too narrow for the picture
+        cmd.setDialogInitialSize(340, 560)   # default opens too narrow for the picture
         light = _light_ui()
         i.addImageCommandInput('img', '', os.path.join(os.path.dirname(os.path.realpath(__file__)), 'profile_light.png' if light else 'profile_dark.png'))
         s = i.addSelectionInput('pts', 'Points', 'Select start (die) and end point')
@@ -259,6 +311,11 @@ class Created(adsk.core.CommandCreatedEventHandler):
         V = adsk.core.ValueInput.createByString
         i.addValueInput('dia', 'Wire diameter', 'mm', V('0.025 mm'))
         i.addValueInput('h', 'Loop height (h1)', 'mm', V('0.2 mm'))
+        pr = i.addDropDownCommandInput('profile', 'Profile', adsk.core.DropDownStyles.TextListDropDownStyle)
+        for k in PROFILES:
+            pr.listItems.add(k, k == PROFILES[0])
+        i.addAngleValueCommandInput('alpha', 'Pad angle (alpha)', V('90 deg')).isVisible = False
+        i.addAngleValueCommandInput('beta', 'Lead angle (beta)', V('15 deg')).isVisible = False
         m = i.addDropDownCommandInput('mat', 'Material', adsk.core.DropDownStyles.TextListDropDownStyle)
         for k in MATS:
             m.listItems.add(k, k == 'Gold')
@@ -267,7 +324,7 @@ class Created(adsk.core.CommandCreatedEventHandler):
             j.listItems.add(k, k == 'None')
         i.addBoolValueInput('live', 'Live preview', True, '', True)
         i.addTextBoxCommandInput('status', '', 'Select two points' if _parametric() else NEEDS_PARAMETRIC, 2, True)
-        for hnd, ev in ((Exec(), cmd.execute), (Preview(), cmd.executePreview)):
+        for hnd, ev in ((Exec(), cmd.execute), (Preview(), cmd.executePreview), (Changed(), cmd.inputChanged)):
             ev.add(hnd); _handlers.append(hnd)
 
 
