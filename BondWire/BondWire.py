@@ -8,31 +8,45 @@ JOINS = ('None', 'Face 1 body', 'Face 2 body', 'Both (merges the two bodies)')
 app = adsk.core.Application.get()
 ui = app.userInterface
 _handlers = []
-DK = 0.125  # JEDEC 4-point: flat top spans D/8
-T = 0.4     # how far down the descent line the 2nd control point sits (0=at crest, 1=at landing)
-N = 10  # fit points sampled along the Bezier (11 points)
+N = 16  # points sampled along the smooth curve (fitted spline)
 
 
-def _controls(dx, dz, h1):
-    """Cubic Bezier shaped like a JEDEC 4-point wire: vertical rise, short crest, straight descent
-    onto the stitch. Apex is solved to sit exactly h1 above the start point (the bond pad, as in JESD59)."""
-    A = h1
+# clamped cubic B-spline, 5 control points, one interior knot
+_KNOTS = (0, 0, 0, 0, .5, 1, 1, 1, 1)
 
+
+def _deboor(c, x):
+    s = next(i for i in range(3, 5) if x < _KNOTS[i + 1]) if x < 1 else 4
+    d = [list(c[j + s - 3]) for j in range(4)]
+    for r in range(1, 4):
+        for j in range(3, r - 1, -1):
+            a = (x - _KNOTS[j + s - 3]) / (_KNOTS[j + 1 + s - r] - _KNOTS[j + s - 3])
+            d[j] = [(1 - a) * d[j - 1][i] + a * d[j][i] for i in range(2)]
+    return tuple(d[3])
+
+
+def _smooth_ctrl(dx, dz, h1, alpha, beta):
+    """Control polygon = the JESD59 5-point path, so the curve is its rounded version: it leaves the pad at
+    angle alpha and lands at angle beta. Rounding lowers the crest, so the crest height is raised until the
+    curve's apex is exactly h1 above the bond pad."""
     def ctrl(Hc):
-        return [(0, 0), (0, Hc), (dx*(DK + T*(1 - DK)), Hc + T*(dz - Hc)), (dx, dz)]
+        x1 = Hc / math.tan(alpha)
+        return [(0, 0), (x1, Hc), (x1 + dx / 8, Hc), (dx / 2, dz + dx / 2 * math.tan(beta)), (dx, dz)]
 
     def apex(Hc):
-        return max(_bezier(*ctrl(Hc), i/100)[1] for i in range(101))
+        return max(_deboor(ctrl(Hc), i / 100)[1] for i in range(101))
 
-    lo, hi = A, 8*A
+    lo, hi = h1, 8 * h1
     for _ in range(40):
-        mid = (lo + hi)/2
-        lo, hi = (mid, hi) if apex(mid) < A else (lo, mid)
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if apex(mid) < h1 else (lo, mid)
     return ctrl(hi)
 
 
 def _polyline(dx, dz, h1, five, alpha, beta):
     """EIA/JEDEC 59 wire path, origin at the bond pad. Simplified model: alpha = 90 deg, no 4th point."""
+    if five and not (0 < alpha < math.pi and 0 <= beta < math.pi / 2):
+        raise ValueError('Pad angle must be 0-180 deg and lead angle 0-90 deg')
     x2 = h1 / math.tan(alpha) if five else 0
     pts = [(0, 0), (x2, h1), (x2 + dx / 8, h1)]
     if five:
@@ -41,13 +55,9 @@ def _polyline(dx, dz, h1, five, alpha, beta):
     return pts
 
 
-def _check(pts, dx, dz, h1, five):
+def _check(pts, dx, dz, h1, five, alpha=math.pi / 2, beta=0):
     if five and not (pts[2][0] < pts[3][0] < dx and pts[3][1] < h1):
-        raise ValueError('Angles give an invalid loop: lower alpha or beta')
-
-
-def _polylen(pts):
-    return sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+        raise ValueError('Invalid loop: lower beta (or alpha) so the point at d/2 stays below the loop top')
 
 
 def _mid(curve):
@@ -106,12 +116,6 @@ def _appearance(des, metal):
             return des.appearances.itemByName(name) or des.appearances.addByCopy(src, name)
 
 
-def _bezier(p0, p1, p2, p3, t):
-    u = 1 - t
-    return tuple(u**3*a + 3*u*u*t*b + 3*u*t*t*c + t**3*d
-                 for a, b, c, d in zip(p0, p1, p2, p3))
-
-
 def _light_ui():
     """True when Fusion's UI is light (picks the dark-text picture). 'Match OS' reads the Windows setting."""
     T = adsk.core.UserInterfaceThemes
@@ -126,9 +130,8 @@ def _light_ui():
     return t in (T.LightGrayUserInterfaceTheme, T.ClassicUserInterfaceTheme)
 
 
-def _length(P):
-    pts = [_bezier(*P, i / 60) for i in range(61)]
-    return sum(math.dist(pts[i], pts[i + 1]) for i in range(60))
+def _length(pts):
+    return sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
 
 
 def build(inputs, e0, e1):
@@ -138,7 +141,7 @@ def build(inputs, e0, e1):
     h = inputs.itemById('h').value
     profile = inputs.itemById('profile').selectedItem.name
     smooth = profile.startswith('Smooth')
-    five = profile.startswith('JEDEC 5')
+    angled = not profile.startswith('JEDEC 4')    # smooth and 5-point use alpha / beta
     alpha = inputs.itemById('alpha').value    # radians
     beta = inputs.itemById('beta').value
 
@@ -150,11 +153,11 @@ def build(inputs, e0, e1):
         u = adsk.core.Vector3D.create(1, 0, 0)
     u.normalize()
     # validate before touching the design so a bad input leaves nothing behind
-    pl = None if smooth else _polyline(dx, dz, h, five, alpha, beta)
+    pl = _polyline(dx, dz, h, angled, alpha, beta) if angled or not smooth else None
     if h <= max(0, dz):
         raise ValueError('Loop height h1 must be above both points (h1 > dz)')
     if pl:
-        _check(pl, dx, dz, h, five)
+        _check(pl, dx, dz, h, angled, alpha, beta)
 
     root = app.activeProduct.rootComponent
     # 3D splines on a plain XY sketch (needs "Allow 3D sketching" pref; points are world coords)
@@ -170,11 +173,12 @@ def build(inputs, e0, e1):
         metal = inputs.itemById('mat').selectedItem.name
         W = lambda p: adsk.core.Point3D.create(a.x + u.x*p[0], a.y + u.y*p[0], a.z + p[1])
         if smooth:
-            P = _controls(dx, dz, h)
-            length = _length(P)
+            P = _smooth_ctrl(dx, dz, h, alpha, beta)
+            curve_pts = [_deboor(P, i / N) for i in range(N + 1)]
+            length = _length([_deboor(P, i / 60) for i in range(61)])
             pts = adsk.core.ObjectCollection.create()
-            for i in range(N + 1):
-                pts.add(W(_bezier(*P, i / N)))
+            for p in curve_pts:
+                pts.add(W(p))
             first = sk.sketchCurves.sketchFittedSplines.add(pts)
             # landing on a planar face: continue straight along the spline's end tangent into the pad, then split at its plane
             # (Fusion can't sweep a pipe along a control-point spline, so this is a fitted one)
@@ -187,7 +191,7 @@ def build(inputs, e0, e1):
                 sk.sketchCurves.sketchLines.addByTwoPoints(
                     first.endSketchPoint, adsk.core.Point3D.create(e.x + t.x*L1, e.y + t.y*L1, e.z + t.z*L1))
         else:
-            length = _polylen(pl)
+            length = _length(pl)
             run_pts = list(pl)
             if land:   # extend the last (straight) segment into the pad; the plane split then cuts it flush
                 tx, tz = pl[-1][0] - pl[-2][0], pl[-1][1] - pl[-2][1]
@@ -291,17 +295,17 @@ class Preview(adsk.core.CommandEventHandler):
 
 class Changed(adsk.core.InputChangedEventHandler):
     def notify(self, args):
-        if args.input.id == 'profile':      # alpha / beta only exist in the 5-point model
-            five = args.input.selectedItem.name.startswith('JEDEC 5')
+        if args.input.id == 'profile':      # the simplified 4-point model has no alpha / beta
+            angled = not args.input.selectedItem.name.startswith('JEDEC 4')
             for k in ('alpha', 'beta'):
-                args.inputs.itemById(k).isVisible = five
+                args.inputs.itemById(k).isVisible = angled
 
 
 class Created(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
         cmd = args.command
         i = cmd.commandInputs
-        cmd.setDialogInitialSize(340, 560)   # default opens too narrow for the picture
+        cmd.setDialogInitialSize(340, 620)   # default opens too narrow for the picture
         light = _light_ui()
         i.addImageCommandInput('img', '', os.path.join(os.path.dirname(os.path.realpath(__file__)), 'profile_light.png' if light else 'profile_dark.png'))
         s = i.addSelectionInput('pts', 'Points', 'Select start (die) and end point')
@@ -314,8 +318,8 @@ class Created(adsk.core.CommandCreatedEventHandler):
         pr = i.addDropDownCommandInput('profile', 'Profile', adsk.core.DropDownStyles.TextListDropDownStyle)
         for k in PROFILES:
             pr.listItems.add(k, k == PROFILES[0])
-        i.addAngleValueCommandInput('alpha', 'Pad angle (alpha)', V('90 deg')).isVisible = False
-        i.addAngleValueCommandInput('beta', 'Lead angle (beta)', V('15 deg')).isVisible = False
+        i.addAngleValueCommandInput('alpha', 'Pad angle (alpha)', V('90 deg'))
+        i.addAngleValueCommandInput('beta', 'Lead angle (beta)', V('15 deg'))
         m = i.addDropDownCommandInput('mat', 'Material', adsk.core.DropDownStyles.TextListDropDownStyle)
         for k in MATS:
             m.listItems.add(k, k == 'Gold')
