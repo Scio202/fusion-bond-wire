@@ -29,9 +29,11 @@ def _smooth_ctrl(dx, dz, h1, alpha, beta):
     """Control polygon = the JESD59 5-point path, so the curve is its rounded version: it leaves the pad at
     angle alpha and lands at angle beta. Rounding lowers the crest, so the crest height is raised until the
     curve's apex is exactly h1 above the bond pad."""
+    x4 = _x4(dx, dz, h1, beta)
+
     def ctrl(Hc):
         x1 = Hc / math.tan(alpha)
-        return [(0, 0), (x1, Hc), (x1 + dx / 8, Hc), (dx / 2, dz + dx / 2 * math.tan(beta)), (dx, dz)]
+        return [(0, 0), (x1, Hc), (x1 + dx / 8, Hc), (x4, dz + (dx - x4) * math.tan(beta)), (dx, dz)]
 
     def apex(Hc):
         return max(_deboor(ctrl(Hc), i / 100)[1] for i in range(101))
@@ -43,6 +45,14 @@ def _smooth_ctrl(dx, dz, h1, alpha, beta):
     return ctrl(hi)
 
 
+def _x4(dx, dz, h1, beta):
+    """X of the 4th point. JESD59 puts it at d/2, but then a long wire at a steep lead angle needs a loop height that
+    grows with d. The standard allows other divisions of d, so slide it toward the lead only when the lead leg
+    (angle beta) would otherwise reach the loop top."""
+    t = math.tan(beta)
+    return dx / 2 if t < 1e-9 else max(dx / 2, dx - 0.95 * (h1 - dz) / t)
+
+
 def _polyline(dx, dz, h1, five, alpha, beta):
     """EIA/JEDEC 59 wire path, origin at the bond pad. Simplified model: alpha = 90 deg, no 4th point."""
     if five and not (0 < alpha < math.pi and 0 <= beta < math.pi / 2):
@@ -50,7 +60,8 @@ def _polyline(dx, dz, h1, five, alpha, beta):
     x2 = h1 / math.tan(alpha) if five else 0
     pts = [(0, 0), (x2, h1), (x2 + dx / 8, h1)]
     if five:
-        pts.append((dx / 2, dz + dx / 2 * math.tan(beta)))
+        x4 = _x4(dx, dz, h1, beta)
+        pts.append((x4, dz + (dx - x4) * math.tan(beta)))
     pts.append((dx, dz))
     return pts
 
@@ -135,7 +146,7 @@ def _length(pts):
 
 
 def build(inputs, e0, e1):
-    """Create the wire (sketch + pipe + trim + optional joins). Returns wire length in cm."""
+    """Create the wire (sketch + pipe + trim + optional joins). Returns (wire length in cm, note)."""
     a, b = _point(e0), _point(e1)
     dia = inputs.itemById('dia').value   # cm (Fusion internal units)
     h = inputs.itemById('h').value
@@ -240,7 +251,8 @@ def build(inputs, e0, e1):
         # "Both": the wire already bridges them, so fusing the second body into the first is clean
         if len(want) > 1 and want[1].entityToken != want[0].entityToken:
             _combine(root, want[0], want[1], J, False)
-    return length
+    note = ' - 4th point moved to %.2f d' % (pl[3][0] / dx) if angled and pl[3][0] > dx / 2 * 1.001 else ''
+    return length, note
 
 
 NEEDS_PARAMETRIC = 'Needs a parametric design: turn on Capture Design History.'
@@ -268,8 +280,8 @@ def _run(args, preview):
     e0, e1 = sel.selection(0).entity, sel.selection(1).entity  # read first: creating a sketch clears the selection
     _busy = True
     try:
-        length = build(ins, e0, e1)
-        ins.itemById('status').text = 'Wire length %.3f mm' % (length * 10)
+        length, note = build(ins, e0, e1)
+        ins.itemById('status').text = 'Wire length %.3f mm%s' % (length * 10, note)
     except:
         if preview:
             ins.itemById('status').text = traceback.format_exc().strip().splitlines()[-1][:120]

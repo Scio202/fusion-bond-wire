@@ -47,9 +47,14 @@ the lead (the picture in the dialog calls it *dz*).
 | **JEDEC 4-point** | The standard's simplified polyline: vertical rise to *h1*, a flat top of *d*/8, then one straight run to the lead. Sharp corners, exact lengths. |
 | **JEDEC 5-point** | The standard's preferred polyline with the pad angle *alpha* and lead angle *beta*; the fourth point sits at *d*/2. |
 
-Angle combinations that don't make a valid loop are rejected with a message. With the lead higher than
-the bond pad the default *beta* is usually too steep, because the standard's point at *d*/2 would end up
-above the loop top; lower *beta*.
+The standard puts the fourth point at *d*/2. For a long wire at a steep *beta*, the lead leg from that
+point would climb above the loop top, so the loop height would have to grow with *d*. The standard allows
+other divisions of *d*, so the add-in slides the point toward the lead only when needed (the status line
+reports it, e.g. "4th point moved to 0.73 d"). *h1* and *beta* stay as you set them. With a long, steep
+wire this gives a nearly flat top followed by a dive to the lead.
+
+Angle combinations that still don't make a valid loop (for example a pad angle that leans the neck past the
+fourth point) are rejected with a message.
 
 The status line shows the path length; for the JEDEC profiles it equals the standard's length sum.
 *Smooth* is sampled into a 17-point fitted spline and swept with a pipe.
