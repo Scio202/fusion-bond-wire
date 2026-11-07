@@ -5,10 +5,12 @@ pad, set the wire diameter and loop height, and the add-in builds the wire as a 
 
 ## Install
 
-1. Download or clone this folder (it must be named `BondWire` and contain `BondWire.py` and `BondWire.manifest`).
-2. In Fusion: **Utilities → Add-Ins** (or `Shift+S`) → **Add-Ins** tab → **+** next to *My Add-Ins* →
+1. Download this repo (**Code → Download ZIP**, or clone it) and extract it.
+2. **Rename the folder to `BondWire`.** Fusion requires the add-in folder name to match `BondWire.py`,
+   and GitHub names the folder after the repo.
+3. In Fusion: **Utilities → Add-Ins** (or `Shift+S`) → **Add-Ins** tab → **+** next to *My Add-Ins* →
    select the `BondWire` folder → **Run**.
-3. The **Bond Wire** button appears in **Solid → Create**.
+4. The **Bond Wire** button appears in **Solid → Create**.
 
 ## Use
 
