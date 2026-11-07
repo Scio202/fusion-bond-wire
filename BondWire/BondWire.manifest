@@ -1,0 +1,11 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "b7a3c1de-5f20-4c58-9a1e-6d2f0b4e8a11",
+  "author": "Scio202",
+  "description": { "": "Creates a realistic wire-bond loop between two picked points or faces: JEDEC-style Bezier profile, flush landing on the pad, material appearance and optional join." },
+  "version": "1.0.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
